@@ -1,0 +1,4 @@
+functions-framework==3.*
+pytz==2023.3.post1
+boto3==1.28.84
+simplegmail==4.1.1
