@@ -1,0 +1,31 @@
+# Deploy the immutable function image from Artifact Registry to Cloud Run.
+# The Cloud Build service account needs Artifact Registry Reader access to the
+# repository containing the image.
+
+substitutions:
+  _SERVICE_NAME: bikeweatherdecision
+  _REGION: europe-west1
+  _IMAGE: us-central1-docker.pkg.dev/cis673-307121/gcf-artifacts/function--2@sha256:fae18d3901b05de8c0601207040654570cfc4da65e38fc45f4a09fb5cd7a1683
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --image=${_IMAGE}
+      - --region=${_REGION}
+      - --platform=managed
+      - --service-account=bike-541@cis673-307121.iam.gserviceaccount.com
+      - --port=8080
+      - --cpu=1
+      - --memory=512Mi
+      - --concurrency=80
+      - --timeout=300s
+      - --min=1
+      - --max=20
+      - --no-allow-unauthenticated
+
+options:
+  logging: CLOUD_LOGGING_ONLY
