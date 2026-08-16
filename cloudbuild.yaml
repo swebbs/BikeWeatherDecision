@@ -25,7 +25,7 @@ steps:
       - --timeout=300s
       - --min=1
       - --max=20
-      - --set-secrets=gmail_username=secret-3d65ef6f-1530-3bd7-b16d-bfb95e98e687:latest,gmail_password=secret-91f888d1-c5ea-3c26-9488-2c99a86fc8ff:latest,weather_api=secret-8e45107d-0c79-387a-a629-946270d0ae7c:latest
+      - --set-secrets=gmail_username=gmail_username:latest,gmail_password=gmail_password:latest,weather_api=weather_api:latest
       - --no-allow-unauthenticated
 
 options:
