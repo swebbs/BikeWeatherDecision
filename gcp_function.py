@@ -47,9 +47,9 @@ logger.setLevel(logging.INFO)
 def send_weather_email(request):
     # Parameters for the email
     units_of_measure = "Imperial"
-    zip_code = '97210'
+    zip_code = '19067'
     country_code = 'US'
-    timezone = 'US/Pacific'
+    timezone = 'American/New_York'
 
     #refresh gmail token if needed
     #refresh_access_token()
