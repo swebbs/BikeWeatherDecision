@@ -2,12 +2,12 @@ import json
 import logging
 import os
 import smtplib
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from zoneinfo import ZoneInfo
 
 import functions_framework
+import pytz
 import requests
 
 from config import (
@@ -24,291 +24,187 @@ from config import (
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-UNITS_OF_MEASURE = "Imperial"
-HAZARD_KEYWORDS = (
-    "flood",
-    "ice",
-    "freezing",
-    "air quality",
-    "wind",
-    "tornado",
-    "thunderstorm",
-)
-
 
 @functions_framework.http
 def send_weather_email(request):
-    report = build_bike_report(
-        UNITS_OF_MEASURE, ZIP_CODE, COUNTRY_CODE, TIMEZONE
-    )
+    units_of_measure = "Imperial"
+    zip_code = ZIP_CODE
+    country_code = COUNTRY_CODE
+    timezone = TIMEZONE
 
-    dry_run = request.args.get("dry_run", "").lower() in {"1", "true", "yes"}
-    if not dry_run:
-        send_report_email(report)
-        report["email_sent"] = True
-    else:
-        report["email_sent"] = False
-
-    return (
-        json.dumps(report, indent=2),
-        200,
-        {"Content-Type": "application/json"},
-    )
-
-
-def get_required_env(name):
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+    send_email(units_of_measure, zip_code, country_code, timezone)
+    return "Weather email sent successfully!"
 
 
 def get_lat_lon_coordinates(zip_code, country_code):
     """Return latitude and longitude for a ZIP/postal code."""
-    api_key = get_required_env("weather_api")
-    response = requests.get(
-        "https://api.openweathermap.org/geo/1.0/zip",
-        params={"zip": f"{zip_code},{country_code}", "appid": api_key},
-        timeout=30,
-    )
+    api_key = os.environ.get("weather_api")
+    base_url = "http://api.openweathermap.org/geo/1.0/zip?"
+    url = f"{base_url}zip={zip_code},{country_code}&appid={api_key}"
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
     location_data = response.json()
     return {"lat": location_data["lat"], "lon": location_data["lon"]}
 
 
 def retrieve_weather_data(units_of_measure, zip_code, country_code):
-    """Fetch the 48-hour One Call forecast for the requested ZIP code."""
     location = get_lat_lon_coordinates(zip_code, country_code)
-    api_key = get_required_env("weather_api")
-    response = requests.get(
-        "https://api.openweathermap.org/data/3.0/onecall",
-        params={
-            "lat": location["lat"],
-            "lon": location["lon"],
-            "appid": api_key,
-            "units": units_of_measure,
-            "exclude": "current,minutely,daily",
-        },
-        timeout=30,
+    api_key = os.environ.get("weather_api")
+    lat = location["lat"]
+    lon = location["lon"]
+    base_url = "https://api.openweathermap.org/data/3.0/onecall?"
+    url = (
+        f"{base_url}lat={lat}&lon={lon}&appid={api_key}"
+        f"&units={units_of_measure}"
     )
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
-    weather_data = response.json()
-    weather_data["_location"] = location
-    return weather_data
+    return response.json()
 
 
-def local_dt(timestamp, timezone):
-    return datetime.fromtimestamp(timestamp, ZoneInfo(timezone))
+def check_for_extreme_events(weather_dict):
+    """Check for weather alerts that should rule out biking."""
+    alerts = weather_dict.get("alerts", [])
+    events = [alert.get("event", "") for alert in alerts]
+
+    hazards = ["Flood", "Ice", "Air Quality", "AIQ", "Air", "Wind", "Tornado"]
+    extreme_events = [
+        event for event in events if any(hazard in event for hazard in hazards)
+    ]
+    return {"Events": events, "Extreme_Events": extreme_events}
 
 
-def target_times(timezone, now=None):
-    """Return configured precipitation window and commute forecast times."""
-    tz = ZoneInfo(timezone)
-    now = now.astimezone(tz) if now else datetime.now(tz)
-    today = now.date()
-    ride_date = today + timedelta(days=1)
+def forecast_window(timezone):
+    """Return the configured precipitation window in local time."""
+    timezone_obj = pytz.timezone(timezone)
+    now = datetime.now(timezone_obj)
+    ride_date = now.date() + timedelta(days=1)
 
-    start = datetime.combine(
-        today, time(PRECIP_WINDOW_START_HOUR), tzinfo=tz
+    start = timezone_obj.localize(
+        datetime.combine(now.date(), datetime.min.time()).replace(
+            hour=PRECIP_WINDOW_START_HOUR
+        )
     )
-    end = datetime.combine(
-        ride_date, time(PRECIP_WINDOW_END_HOUR), tzinfo=tz
+    end = timezone_obj.localize(
+        datetime.combine(ride_date, datetime.min.time()).replace(
+            hour=PRECIP_WINDOW_END_HOUR
+        )
     )
-    morning = datetime.combine(
-        ride_date, time(MORNING_COMMUTE_HOUR), tzinfo=tz
-    )
-    afternoon = datetime.combine(
-        ride_date, time(AFTERNOON_COMMUTE_HOUR), tzinfo=tz
+    return start, end, ride_date
+
+
+def hourly_forecasts_in_window(weather_dict, timezone):
+    """Return forecast rows that fall inside the configured local-time window."""
+    timezone_obj = pytz.timezone(timezone)
+    start, end, _ = forecast_window(timezone)
+
+    return [
+        hour
+        for hour in weather_dict.get("hourly", [])
+        if start
+        <= datetime.fromtimestamp(hour["dt"], timezone_obj)
+        <= end
+    ]
+
+
+def rain_totals(weather_dict, timezone):
+    """Return forecast rain total during the configured time window."""
+    rain = 0
+    for hour in hourly_forecasts_in_window(weather_dict, timezone):
+        rain += hour.get("rain", {}).get("1h", 0)
+    return round(rain, 2)
+
+
+def snow_totals(weather_dict, timezone):
+    """Return forecast snow total during the configured time window."""
+    snow = 0
+    for hour in hourly_forecasts_in_window(weather_dict, timezone):
+        snow += hour.get("snow", {}).get("1h", 0)
+    return round(snow, 2)
+
+
+def date_time(timestamp, timezone):
+    timezone_obj = pytz.timezone(timezone)
+    dt = datetime.fromtimestamp(timestamp, timezone_obj)
+    return {"Date": dt.strftime("%Y-%m-%d"), "Time": dt.strftime("%I:%M:%S %p")}
+
+
+def forecast_for_hour(weather_dict, timezone, target_hour):
+    """Return the hourly forecast closest to the configured time tomorrow."""
+    timezone_obj = pytz.timezone(timezone)
+    _, _, ride_date = forecast_window(timezone)
+    target = timezone_obj.localize(
+        datetime.combine(ride_date, datetime.min.time()).replace(hour=target_hour)
     )
 
+    return min(
+        weather_dict["hourly"],
+        key=lambda hour: abs(
+            datetime.fromtimestamp(hour["dt"], timezone_obj) - target
+        ),
+    )
+
+
+def morning_ride_feels_temp(weather_dict, timezone):
+    hour = forecast_for_hour(weather_dict, timezone, MORNING_COMMUTE_HOUR)
+    date_and_time = date_time(hour["dt"], timezone)
     return {
-        "ride_date": ride_date,
-        "window_start": start,
-        "window_end": end,
-        "morning_target": morning,
-        "afternoon_target": afternoon,
+        "Time": date_and_time["Time"],
+        "Date": date_and_time["Date"],
+        "temp": hour["feels_like"],
     }
 
 
-def forecast_hours_in_window(weather_dict, timezone, start, end):
-    """Return hourly forecasts whose local timestamp falls in [start, end]."""
-    hours = []
-    for hour in weather_dict.get("hourly", []):
-        dt = local_dt(hour["dt"], timezone)
-        if start <= dt <= end:
-            hours.append((dt, hour))
-    return hours
-
-
-def precipitation_total(window_hours, kind):
-    """Sum hourly rain/snow values over the configured decision window."""
-    return round(
-        sum(hour.get(kind, {}).get("1h", 0.0) for _, hour in window_hours),
-        2,
-    )
-
-
-def closest_forecast_hour(weather_dict, timezone, target):
-    """Return the forecast record closest to a specific local clock time."""
-    hours = weather_dict.get("hourly", [])
-    if not hours:
-        raise RuntimeError("OpenWeather response contained no hourly forecast")
-
-    dt, hour = min(
-        ((local_dt(hour["dt"], timezone), hour) for hour in hours),
-        key=lambda item: abs(item[0] - target),
-    )
+def afternoon_ride_feels_temp(weather_dict, timezone):
+    hour = forecast_for_hour(weather_dict, timezone, AFTERNOON_COMMUTE_HOUR)
+    date_and_time = date_time(hour["dt"], timezone)
     return {
-        "time": dt.isoformat(),
-        "feels_like": hour["feels_like"],
-        "temp": hour["temp"],
-        "weather": [
-            item.get("description", "") for item in hour.get("weather", [])
-        ],
+        "Time": date_and_time["Time"],
+        "Date": date_and_time["Date"],
+        "temp": hour["feels_like"],
     }
 
 
-def relevant_alerts(weather_dict, timezone, start, end):
-    """Return biking-relevant alerts that overlap the decision window."""
-    relevant = []
-    all_events = []
+def good_or_bad_bike_day(units_of_measure, zip_code, country_code, timezone):
+    weather_dict = retrieve_weather_data(units_of_measure, zip_code, country_code)
+    rain = rain_totals(weather_dict, timezone)
+    snow = snow_totals(weather_dict, timezone)
+    events = check_for_extreme_events(weather_dict)
+    morning = morning_ride_feels_temp(weather_dict, timezone)
+    afternoon = afternoon_ride_feels_temp(weather_dict, timezone)
 
-    for alert in weather_dict.get("alerts", []):
-        event = alert.get("event", "")
-        all_events.append(event)
-        searchable_text = " ".join(
-            [
-                event,
-                alert.get("description", ""),
-                " ".join(alert.get("tags", [])),
-            ]
-        ).lower()
-
-        is_hazard = any(keyword in searchable_text for keyword in HAZARD_KEYWORDS)
-        if not is_hazard:
-            continue
-
-        alert_start = (
-            local_dt(alert["start"], timezone) if alert.get("start") else start
-        )
-        alert_end = local_dt(alert["end"], timezone) if alert.get("end") else end
-        overlaps_window = alert_start <= end and alert_end >= start
-
-        if overlaps_window:
-            relevant.append(
-                {
-                    "event": event,
-                    "start": alert_start.isoformat(),
-                    "end": alert_end.isoformat(),
-                }
-            )
-
-    return {"all_events": all_events, "relevant": relevant}
-
-
-def build_bike_report(units_of_measure, zip_code, country_code, timezone):
-    weather_dict = retrieve_weather_data(
-        units_of_measure, zip_code, country_code
-    )
-    times = target_times(timezone)
-    window_hours = forecast_hours_in_window(
-        weather_dict,
-        timezone,
-        times["window_start"],
-        times["window_end"],
+    is_good_day = (
+        rain < MAX_RAIN_MM
+        and snow == 0
+        and len(events["Extreme_Events"]) == 0
     )
 
-    if not window_hours:
-        raise RuntimeError("No hourly forecasts found in the biking window")
-
-    rain_mm = precipitation_total(window_hours, "rain")
-    snow_mm = precipitation_total(window_hours, "snow")
-    alerts = relevant_alerts(
-        weather_dict,
-        timezone,
-        times["window_start"],
-        times["window_end"],
-    )
-    morning = closest_forecast_hour(
-        weather_dict, timezone, times["morning_target"]
-    )
-    afternoon = closest_forecast_hour(
-        weather_dict, timezone, times["afternoon_target"]
-    )
-
-    reasons = []
-    if rain_mm >= MAX_RAIN_MM:
-        reasons.append(
-            f"forecast rain is {rain_mm} mm (limit < {MAX_RAIN_MM} mm)"
-        )
-    if snow_mm > 0:
-        reasons.append(f"forecast snow is {snow_mm} mm")
-    if alerts["relevant"]:
-        reasons.append(
-            "relevant weather alert(s): "
-            + ", ".join(alert["event"] for alert in alerts["relevant"])
-        )
-
-    is_good_day = not reasons
-
-    return {
-        "zip_code": zip_code,
-        "location": weather_dict.get("_location", {}),
-        "timezone": timezone,
-        "ride_date": times["ride_date"].isoformat(),
-        "decision": "GOOD" if is_good_day else "NOT_GOOD",
-        "is_good_day": is_good_day,
-        "reasons": reasons,
-        "window": {
-            "start": times["window_start"].isoformat(),
-            "end": times["window_end"].isoformat(),
-            "hourly_records": len(window_hours),
-        },
-        "rain_mm": rain_mm,
-        "rain_inches": round(rain_mm / 25.4, 3),
-        "snow_mm": snow_mm,
-        "snow_inches": round(snow_mm / 25.4, 3),
-        "alerts": alerts,
-        "morning_ride": morning,
-        "afternoon_ride": afternoon,
-    }
-
-
-def build_email(report):
-    if report["is_good_day"]:
+    if is_good_day:
         subject = "Tomorrow is a GREAT day to bike to work!"
         closing = "Enjoy the ride!"
     else:
-        subject = "Sorry, tomorrow is NOT a GREAT day to bike to work!"
-        closing = "Maybe tomorrow!"
+        subject = "Sorry, tomorrow is a NOT a GREAT day to bike to work!"
+        closing = "Maybe Tomorrow!"
 
-    reason_text = (
-        "None" if not report["reasons"] else "; ".join(report["reasons"])
-    )
     body = (
-        f"Date of Ride: {report['ride_date']}<br />"
-        f"Forecast Window: {report['window']['start']} to "
-        f"{report['window']['end']}<br />"
-        f"Total Rain: {report['rain_inches']} inches "
-        f"({report['rain_mm']} mm)<br />"
-        f"Total Snow: {report['snow_inches']} inches "
-        f"({report['snow_mm']} mm)<br />"
-        f"Relevant Alerts: "
-        f"{[a['event'] for a in report['alerts']['relevant']]}<br />"
-        f"Decision Reasons: {reason_text}<br />"
-        f"Morning Ride ({report['morning_ride']['time']}): "
-        f"{report['morning_ride']['feels_like']} F feels like<br />"
-        f"Afternoon Ride ({report['afternoon_ride']['time']}): "
-        f"{report['afternoon_ride']['feels_like']} F feels like<br />"
+        f"Date of Ride: {morning['Date']}<br />"
+        f"Total Rain: {round(rain / 25.4, 3)} inches<br />"
+        f"Total Snow: {round(snow / 25.4, 3)} inches<br />"
+        f"Events: {events['Events']}<br />"
+        f"Morning Ride Temperature: {morning['temp']} F<br />"
+        f"Afternoon Ride Temperature: {afternoon['temp']} F<br />"
         f"{closing}"
     )
     return subject, body
 
 
-def send_report_email(report):
-    gmail_username = get_required_env("gmail_username")
-    gmail_password = get_required_env("gmail_password")
-    subject, body = build_email(report)
+def send_email(units_of_measure, zip_code, country_code, timezone):
+    gmail_username = os.environ.get("gmail_username")
+    gmail_password = os.environ.get("gmail_password")
+
+    subject, body = good_or_bad_bike_day(
+        units_of_measure, zip_code, country_code, timezone
+    )
 
     message = MIMEMultipart()
     message["From"] = gmail_username
@@ -316,9 +212,7 @@ def send_report_email(report):
     message["Subject"] = subject
     message.attach(MIMEText(body, "html"))
 
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp_server:
+    with smtplib.SMTP("smtp.gmail.com", 587) as smtp_server:
         smtp_server.starttls()
         smtp_server.login(gmail_username, gmail_password)
-        smtp_server.sendmail(
-            gmail_username, gmail_username, message.as_string()
-        )
+        smtp_server.sendmail(gmail_username, gmail_username, message.as_string())
