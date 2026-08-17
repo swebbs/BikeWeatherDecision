@@ -1,53 +1,65 @@
 ## Weather-Based Biking Decision Tool
 
-This project is a coding solution to determine whether tomorrow is a good day for biking to work based on the weather forecast. The decision is made by considering factors such as rain, snow, air quality, and ice alerts. The OpenWeather API is used to obtain the hourly forecast, and the decision criteria are set to ensure a safe and enjoyable biking experience.
+This project determines whether tomorrow is a good day to bike to work using the OpenWeather One Call 3.0 forecast. It evaluates precipitation and safety alerts over the period that matters for the next day's commute, then emails the result.
 
 ### Biking Decision Rules
 
-The following criteria are used to determine whether it's a good day to bike to work:
+A day is considered good for biking when all of the following are true:
 
-- **Rain:** Total rainfall from 9 pm the night before to 6 pm the day of should be less than 1mm.
-- **Snow:** No snow is expected in the same time frame.
-- **Air Quality:** No air quality alerts.
-- **Ice:** No ice alerts.
+- **Rain:** Total forecast rainfall from **9:00 PM the night before through 6:00 PM the day of the ride** is less than **1 mm**.
+- **Snow:** No snow is forecast during that same window.
+- **Safety alerts:** No relevant weather alert overlapping that window, including ice/freezing conditions, air quality, flooding, strong wind, tornadoes, or thunderstorms.
+
+The email also reports representative commute temperatures using the OpenWeather hourly forecast closest to:
+
+- **Morning commute:** 8:00 AM local time.
+- **Afternoon commute:** 5:00 PM local time.
+
+All forecast timestamps are converted explicitly to `America/New_York`. The logic does not depend on fixed positions such as `hourly[10]`, so the results remain correct if the scheduled function runs a few minutes early/late or daylight-saving time changes.
 
 ### OpenWeather API Setup
 
-1. **Create an Account and Subscribe:**
-   - Sign up for an account on the [OpenWeather website](https://openweathermap.org/).
-   - Subscribe to the OpenWeather API 3.0 and generate an API key.
+1. Create an OpenWeather account and subscribe to One Call API 3.0.
+2. Store the API key in GCP Secret Manager as `weather_api`.
+3. The application first resolves ZIP code `19067` through OpenWeather's ZIP geocoding endpoint and then requests the One Call hourly forecast for those coordinates.
 
-2. **API Key Usage:**
-   - Store the OpenWeather API key securely as it will be used to access weather data.
+### Email Notifications
 
-### Email Notifications Setup (SMTP)
+Email is sent through Gmail SMTP using an app password. Store the credentials in GCP Secret Manager as:
 
-#### Switching to SMTP for Email Notifications
+- `gmail_username`
+- `gmail_password`
 
-We have moved from using OAuth for email notifications to SMTP due to the expiration of refresh tokens after one week. SMTP provides a less secure but more consistent method for sending emails.
+### Google Cloud Platform Setup
 
-1. **Generate App Password for SMTP:**
-   - Visit your email provider's settings page to generate an "App Password" for SMTP access.
-   - For detailed instructions on generating an app password, refer to your email provider's documentation. Here is an example guide for [Gmail's App Password setup](https://support.google.com/accounts/answer/185833).
+The application runs as a Cloud Run function with the entry point:
 
-### Google Cloud Platform (GCP) Setup
+`send_weather_email`
 
-1. **Create a GCP Account:**
-   - [Create a Google Cloud Platform (GCP) Account](https://cloud.google.com/gcp/getting-started)
+A Cloud Build trigger watches the GitHub `main` branch. When code is pushed or merged to `main`, Cloud Build deploys the current repository source to Cloud Run.
 
-2. **Setting Up GCP Function:**
-   - Follow the [Getting Started with Cloud Functions](https://cloud.google.com/functions/docs/quickstart) guide to create and deploy your Cloud Function.
-   - Ensure the Cloud Function has the necessary [IAM and Permissions]([https://cloud.google.com/functions/docs/securing/iam](https://developers.google.com/apps-script/guides/admin/assign-cloud-permissions)) to access external APIs.
-   - Set up environment variables, including the OpenWeather API key and SMTP credentials (username and app password).
+Cloud Scheduler should invoke the function in the evening, around **9:00 PM America/New_York**, so the email evaluates the following day's commute.
 
-3. **Scheduling a Function on GCP:**
-   - Utilize [Cloud Scheduler](https://cloud.google.com/scheduler/docs/creating) to schedule your Cloud Function to run at 9 am, Monday to Friday.
+### Testing Without Sending Email
 
-4. **Store Credentials Locally:**
-   - Update the necessary environment variables within your Cloud Function to include the newly generated SMTP credentials for sending emails.
+The HTTP function supports a dry-run query parameter:
 
-### Conclusion
+`?dry_run=true`
 
-This project combines weather data from the OpenWeather API, GCP for function execution, and SMTP for email notifications to provide a biking decision tool. Adjust the decision criteria as needed and enjoy biking to work on the best days!
+A dry run executes the same geocoding, forecast, time-window, precipitation, alert, and commute-temperature logic but does not send an email. The response is JSON containing:
 
-**Note:** Be mindful of API call limits, especially if exceeding the free tier. Set up appropriate safeguards to prevent unwanted charges or account disruptions. Additionally, while SMTP provides consistent access, it's less secure compared to OAuth. Implement necessary precautions to secure your SMTP credentials.
+- ride date
+- exact forecast-window start/end timestamps
+- rain and snow totals in mm and inches
+- relevant alerts
+- morning and afternoon forecast timestamps and feels-like temperatures
+- final `GOOD` / `NOT_GOOD` decision
+- reasons for a negative decision
+
+This is the preferred way to validate forecast logic directly in GCP after a deployment.
+
+### Notes
+
+OpenWeather One Call hourly `rain.1h` and `snow.1h` precipitation values are reported in millimeters per hour even when temperature units are imperial. Because each forecast record represents one hour, the application sums those hourly values across the decision window to estimate total precipitation.
+
+Be mindful of OpenWeather API call limits and keep SMTP/API credentials in Secret Manager rather than source control.
