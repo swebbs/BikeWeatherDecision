@@ -1,53 +1,115 @@
 ## Weather-Based Biking Decision Tool
 
-This project is a coding solution to determine whether tomorrow is a good day for biking to work based on the weather forecast. The decision is made by considering factors such as rain, snow, air quality, and ice alerts. The OpenWeather API is used to obtain the hourly forecast, and the decision criteria are set to ensure a safe and enjoyable biking experience.
+This project determines whether tomorrow is a good day to bike to work using the OpenWeather One Call 3.0 hourly forecast. It checks rain, snow, and weather alerts, then emails the result.
+
+### Start Here: Configure Your Commute
+
+Before deploying, open **[`config.py`](config.py)** and enter your commute settings. Most users should only need to edit this one file; the weather and email logic in `main.py` can stay unchanged.
+
+The configurable values are:
+
+- ZIP/postal code and country
+- time zone
+- morning commute hour
+- afternoon commute hour
+- maximum total rain you are willing to bike in
+- start and end of the rain/snow evaluation window
+- weather alert keywords that should rule out biking
+
+Default configuration:
+
+```python
+# Location
+ZIP_CODE = "19067"
+COUNTRY_CODE = "US"
+TIMEZONE = "America/New_York"
+
+# Representative commute forecast hours (24-hour clock)
+MORNING_COMMUTE_HOUR = 7       # 7:00 AM
+AFTERNOON_COMMUTE_HOUR = 17    # 5:00 PM
+
+# Maximum total rain allowed during the forecast window
+MAX_RAIN_MM = 1.0
+
+# Rain/snow evaluation window
+PRECIP_WINDOW_START_HOUR = 21  # 9:00 PM the night before
+PRECIP_WINDOW_END_HOUR = 18    # 6:00 PM the day of the ride
+
+# Weather alert event keywords that make the day NOT good for biking
+EXTREME_HAZARDS = [
+    "Flood",
+    "Ice",
+    "Air Quality",
+    "AIQ",
+    "Air",
+    "Wind",
+    "Tornado",
+]
+```
+
+The default `EXTREME_HAZARDS` list preserves the project's original checks. OpenWeather alert event names can vary by the national weather-alert provider, so the code checks whether any configured keyword appears in the alert event name.
+
+OpenWeather's alert documentation, including the available standardized severe-weather types, is here:
+https://openweathermap.org/openweather-alerts
+
+Time zones use IANA names such as `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, or `Europe/London`.
+
+A full list of supported time zone names is available here:
+https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+
+Commute and precipitation-window hours use a 24-hour clock from `0` through `23`.
+
+Once [`config.py`](config.py) matches your commute, continue with the OpenWeather, email, and GCP setup below.
 
 ### Biking Decision Rules
 
-The following criteria are used to determine whether it's a good day to bike to work:
+With the default configuration, a day is considered good for biking when all of the following are true:
 
-- **Rain:** Total rainfall from 9 pm the night before to 6 pm the day of should be less than 1mm.
-- **Snow:** No snow is expected in the same time frame.
-- **Air Quality:** No air quality alerts.
-- **Ice:** No ice alerts.
+- **Rain:** Total forecast rainfall from **9:00 PM the night before through 6:00 PM the day of the ride** is less than **1 mm**.
+- **Snow:** No snow is forecast during that same window.
+- **Weather alerts:** No alert matching one of the configured `EXTREME_HAZARDS` keywords.
+
+The email also reports representative commute temperatures using the OpenWeather hourly forecast closest to the configured commute hours. The defaults are:
+
+- **Morning commute:** 7:00 AM local time.
+- **Afternoon commute:** 5:00 PM local time.
+
+The important change from the original implementation is that these values are selected by their actual local timestamps rather than fixed positions such as `hourly[10]` or `hourly[21]`. Rain and snow are likewise totaled from forecast rows that fall inside the configured time window.
 
 ### OpenWeather API Setup
 
-1. **Create an Account and Subscribe:**
-   - Sign up for an account on the [OpenWeather website](https://openweathermap.org/).
-   - Subscribe to the OpenWeather API 3.0 and generate an API key.
+1. Create an OpenWeather account and subscribe to One Call API 3.0.
+2. Store the API key in GCP Secret Manager as `weather_api`.
+3. The application resolves the configured ZIP/postal code through OpenWeather's ZIP geocoding endpoint and then requests the One Call hourly forecast for those coordinates.
 
-2. **API Key Usage:**
-   - Store the OpenWeather API key securely as it will be used to access weather data.
+### Email Notifications
 
-### Email Notifications Setup (SMTP)
+Email is sent through Gmail SMTP using an app password. Store the credentials in GCP Secret Manager as:
 
-#### Switching to SMTP for Email Notifications
+- `gmail_username`
+- `gmail_password`
 
-We have moved from using OAuth for email notifications to SMTP due to the expiration of refresh tokens after one week. SMTP provides a less secure but more consistent method for sending emails.
+The email format remains the same and includes:
 
-1. **Generate App Password for SMTP:**
-   - Visit your email provider's settings page to generate an "App Password" for SMTP access.
-   - For detailed instructions on generating an app password, refer to your email provider's documentation. Here is an example guide for [Gmail's App Password setup](https://support.google.com/accounts/answer/185833).
+- ride date
+- total rain
+- total snow
+- weather events
+- morning ride feels-like temperature
+- afternoon ride feels-like temperature
 
-### Google Cloud Platform (GCP) Setup
+### Google Cloud Platform Setup
 
-1. **Create a GCP Account:**
-   - [Create a Google Cloud Platform (GCP) Account](https://cloud.google.com/gcp/getting-started)
+The application runs as a Cloud Run function with the entry point:
 
-2. **Setting Up GCP Function:**
-   - Follow the [Getting Started with Cloud Functions](https://cloud.google.com/functions/docs/quickstart) guide to create and deploy your Cloud Function.
-   - Ensure the Cloud Function has the necessary [IAM and Permissions]([https://cloud.google.com/functions/docs/securing/iam](https://developers.google.com/apps-script/guides/admin/assign-cloud-permissions)) to access external APIs.
-   - Set up environment variables, including the OpenWeather API key and SMTP credentials (username and app password).
+`send_weather_email`
 
-3. **Scheduling a Function on GCP:**
-   - Utilize [Cloud Scheduler](https://cloud.google.com/scheduler/docs/creating) to schedule your Cloud Function to run at 9 am, Monday to Friday.
+A Cloud Build trigger watches the GitHub `main` branch. When code is pushed or merged to `main`, Cloud Build deploys the current repository source to Cloud Run.
 
-4. **Store Credentials Locally:**
-   - Update the necessary environment variables within your Cloud Function to include the newly generated SMTP credentials for sending emails.
+Cloud Scheduler should invoke the function in the evening before the ride day. With the default configuration, running it around **9:00 PM America/New_York** works well.
 
-### Conclusion
+### Notes
 
-This project combines weather data from the OpenWeather API, GCP for function execution, and SMTP for email notifications to provide a biking decision tool. Adjust the decision criteria as needed and enjoy biking to work on the best days!
+OpenWeather One Call hourly `rain.1h` and `snow.1h` values are summed across the configured precipitation window.
 
-**Note:** Be mindful of API call limits, especially if exceeding the free tier. Set up appropriate safeguards to prevent unwanted charges or account disruptions. Additionally, while SMTP provides consistent access, it's less secure compared to OAuth. Implement necessary precautions to secure your SMTP credentials.
+Be mindful of OpenWeather API call limits and keep SMTP/API credentials in Secret Manager rather than source control.
