@@ -12,7 +12,7 @@ A day is considered good for biking when all of the following are true:
 
 The email also reports representative commute temperatures using the OpenWeather hourly forecast closest to:
 
-- **Morning commute:** 8:00 AM local time.
+- **Morning commute:** 7:00 AM local time.
 - **Afternoon commute:** 5:00 PM local time.
 
 All forecast timestamps are converted explicitly to `America/New_York`. The logic does not depend on fixed positions such as `hourly[10]`, so the results remain correct if the scheduled function runs a few minutes early/late or daylight-saving time changes.
