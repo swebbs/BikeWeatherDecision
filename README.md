@@ -14,6 +14,7 @@ The configurable values are:
 - afternoon commute hour
 - maximum total rain you are willing to bike in
 - start and end of the rain/snow evaluation window
+- weather alert keywords that should rule out biking
 
 Default configuration:
 
@@ -33,7 +34,23 @@ MAX_RAIN_MM = 1.0
 # Rain/snow evaluation window
 PRECIP_WINDOW_START_HOUR = 21  # 9:00 PM the night before
 PRECIP_WINDOW_END_HOUR = 18    # 6:00 PM the day of the ride
+
+# Weather alert event keywords that make the day NOT good for biking
+EXTREME_HAZARDS = [
+    "Flood",
+    "Ice",
+    "Air Quality",
+    "AIQ",
+    "Air",
+    "Wind",
+    "Tornado",
+]
 ```
+
+The default `EXTREME_HAZARDS` list preserves the project's original checks. OpenWeather alert event names can vary by the national weather-alert provider, so the code checks whether any configured keyword appears in the alert event name.
+
+OpenWeather's alert documentation, including the available standardized severe-weather types, is here:
+https://openweathermap.org/openweather-alerts
 
 Time zones use IANA names such as `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, or `Europe/London`.
 
@@ -50,7 +67,7 @@ With the default configuration, a day is considered good for biking when all of 
 
 - **Rain:** Total forecast rainfall from **9:00 PM the night before through 6:00 PM the day of the ride** is less than **1 mm**.
 - **Snow:** No snow is forecast during that same window.
-- **Weather alerts:** No alert matching the project's existing hazard checks for flood, ice, air quality, wind, or tornado conditions.
+- **Weather alerts:** No alert matching one of the configured `EXTREME_HAZARDS` keywords.
 
 The email also reports representative commute temperatures using the OpenWeather hourly forecast closest to the configured commute hours. The defaults are:
 
