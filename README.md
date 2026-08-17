@@ -2,9 +2,18 @@
 
 This project determines whether tomorrow is a good day to bike to work using the OpenWeather One Call 3.0 forecast. It evaluates precipitation and safety alerts over the period that matters for the next day's commute, then emails the result.
 
-### Quick Configuration
+### Start Here: Configure Your Commute
 
-Most users should only need to edit `config.py`. The weather logic in `main.py` can stay unchanged.
+Before deploying, open **[`config.py`](config.py)** and enter your own commute settings. Most users should only need to edit this one file; the weather and email logic in `main.py` can stay unchanged.
+
+The configurable values are:
+
+- ZIP/postal code and country
+- time zone
+- morning commute hour
+- afternoon commute hour
+- maximum total rain you are willing to bike in
+- start and end of the rain/snow evaluation window
 
 Default configuration:
 
@@ -32,6 +41,8 @@ A full list of supported time zone names is available here:
 https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 Commute and precipitation-window hours use a 24-hour clock from `0` through `23`.
+
+Once [`config.py`](config.py) matches your commute, continue with the OpenWeather, email, and GCP setup below.
 
 ### Biking Decision Rules
 
