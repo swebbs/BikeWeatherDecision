@@ -13,6 +13,7 @@ import requests
 from config import (
     AFTERNOON_COMMUTE_HOUR,
     COUNTRY_CODE,
+    EXTREME_HAZARDS,
     MAX_RAIN_MM,
     MORNING_COMMUTE_HOUR,
     PRECIP_WINDOW_END_HOUR,
@@ -67,9 +68,8 @@ def check_for_extreme_events(weather_dict):
     alerts = weather_dict.get("alerts", [])
     events = [alert.get("event", "") for alert in alerts]
 
-    hazards = ["Flood", "Ice", "Air Quality", "AIQ", "Air", "Wind", "Tornado"]
     extreme_events = [
-        event for event in events if any(hazard in event for hazard in hazards)
+        event for event in events if any(hazard in event for hazard in EXTREME_HAZARDS)
     ]
     return {"Events": events, "Extreme_Events": extreme_events}
 
