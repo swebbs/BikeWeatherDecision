@@ -27,8 +27,23 @@ AFTERNOON_COMMUTE_HOUR = 17  # 5:00 PM
 # The day is considered NOT good for biking when rain is >= this value.
 MAX_RAIN_MM = 1.0
 
-# Forecast window used to total rain/snow and evaluate weather alerts.
+# Forecast window used to total rain/snow.
 # The start is on the evening before the ride; the end is on the ride day.
 # Use 24-hour clock values from 0-23.
 PRECIP_WINDOW_START_HOUR = 21  # 9:00 PM the night before
 PRECIP_WINDOW_END_HOUR = 18    # 6:00 PM the day of the ride
+
+# Weather alert event keywords that make the day NOT good for biking.
+# These preserve the project's original hazard checks exactly.
+EXTREME_HAZARDS = [
+    "Flood",
+    "Ice",
+    "Air Quality",
+    "AIQ",
+    "Air",
+    "Wind",
+    "Tornado",
+]
+
+# OpenWeather alert documentation and available severe-weather types:
+# https://openweathermap.org/openweather-alerts
