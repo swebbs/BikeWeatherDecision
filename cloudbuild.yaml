@@ -17,10 +17,10 @@ steps:
       - --service-account=bike-541@cis673-307121.iam.gserviceaccount.com
       - --cpu=1
       - --memory=512Mi
-      - --concurrency=80
-      - --timeout=300s
+      - --concurrency=1
+      - --timeout=60s
       - --min=0
-      - --max=20
+      - --max=1
       - --set-secrets=gmail_username=gmail_username:latest,gmail_password=gmail_password:latest,weather_api=weather_api:latest
       - --no-allow-unauthenticated
 
