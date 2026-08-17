@@ -10,14 +10,21 @@ from zoneinfo import ZoneInfo
 import functions_framework
 import requests
 
+from config import (
+    AFTERNOON_COMMUTE_HOUR,
+    COUNTRY_CODE,
+    MAX_RAIN_MM,
+    MORNING_COMMUTE_HOUR,
+    PRECIP_WINDOW_END_HOUR,
+    PRECIP_WINDOW_START_HOUR,
+    TIMEZONE,
+    ZIP_CODE,
+)
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-RAIN_LIMIT_MM = 1.0
-WINDOW_START_HOUR = 21
-WINDOW_END_HOUR = 18
-MORNING_RIDE_HOUR = 7
-AFTERNOON_RIDE_HOUR = 17
+UNITS_OF_MEASURE = "Imperial"
 HAZARD_KEYWORDS = (
     "flood",
     "ice",
@@ -31,13 +38,8 @@ HAZARD_KEYWORDS = (
 
 @functions_framework.http
 def send_weather_email(request):
-    units_of_measure = "Imperial"
-    zip_code = "19067"
-    country_code = "US"
-    timezone = "America/New_York"
-
     report = build_bike_report(
-        units_of_measure, zip_code, country_code, timezone
+        UNITS_OF_MEASURE, ZIP_CODE, COUNTRY_CODE, TIMEZONE
     )
 
     dry_run = request.args.get("dry_run", "").lower() in {"1", "true", "yes"}
@@ -100,17 +102,23 @@ def local_dt(timestamp, timezone):
 
 
 def target_times(timezone, now=None):
-    """Return the original project window: 9 PM today through 6 PM tomorrow."""
+    """Return configured precipitation window and commute forecast times."""
     tz = ZoneInfo(timezone)
     now = now.astimezone(tz) if now else datetime.now(tz)
     today = now.date()
     ride_date = today + timedelta(days=1)
 
-    start = datetime.combine(today, time(WINDOW_START_HOUR), tzinfo=tz)
-    end = datetime.combine(ride_date, time(WINDOW_END_HOUR), tzinfo=tz)
-    morning = datetime.combine(ride_date, time(MORNING_RIDE_HOUR), tzinfo=tz)
+    start = datetime.combine(
+        today, time(PRECIP_WINDOW_START_HOUR), tzinfo=tz
+    )
+    end = datetime.combine(
+        ride_date, time(PRECIP_WINDOW_END_HOUR), tzinfo=tz
+    )
+    morning = datetime.combine(
+        ride_date, time(MORNING_COMMUTE_HOUR), tzinfo=tz
+    )
     afternoon = datetime.combine(
-        ride_date, time(AFTERNOON_RIDE_HOUR), tzinfo=tz
+        ride_date, time(AFTERNOON_COMMUTE_HOUR), tzinfo=tz
     )
 
     return {
@@ -133,7 +141,7 @@ def forecast_hours_in_window(weather_dict, timezone, start, end):
 
 
 def precipitation_total(window_hours, kind):
-    """Sum hourly rain/snow values over the decision window."""
+    """Sum hourly rain/snow values over the configured decision window."""
     return round(
         sum(hour.get(kind, {}).get("1h", 0.0) for _, hour in window_hours),
         2,
@@ -229,9 +237,9 @@ def build_bike_report(units_of_measure, zip_code, country_code, timezone):
     )
 
     reasons = []
-    if rain_mm >= RAIN_LIMIT_MM:
+    if rain_mm >= MAX_RAIN_MM:
         reasons.append(
-            f"forecast rain is {rain_mm} mm (limit < {RAIN_LIMIT_MM} mm)"
+            f"forecast rain is {rain_mm} mm (limit < {MAX_RAIN_MM} mm)"
         )
     if snow_mm > 0:
         reasons.append(f"forecast snow is {snow_mm} mm")
@@ -279,7 +287,8 @@ def build_email(report):
     )
     body = (
         f"Date of Ride: {report['ride_date']}<br />"
-        f"Forecast Window: 9:00 PM to 6:00 PM ET<br />"
+        f"Forecast Window: {report['window']['start']} to "
+        f"{report['window']['end']}<br />"
         f"Total Rain: {report['rain_inches']} inches "
         f"({report['rain_mm']} mm)<br />"
         f"Total Snow: {report['snow_inches']} inches "
