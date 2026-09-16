@@ -2,12 +2,25 @@ import json
 import logging
 import os
 import smtplib
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import functions_framework
 import pytz
 import requests
+
+from config import (
+    AFTERNOON_COMMUTE_HOUR,
+    COUNTRY_CODE,
+    EXTREME_HAZARDS,
+    MAX_RAIN_MM,
+    MORNING_COMMUTE_HOUR,
+    PRECIP_WINDOW_END_HOUR,
+    PRECIP_WINDOW_START_HOUR,
+    TIMEZONE,
+    ZIP_CODE,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -16,9 +29,9 @@ logger.setLevel(logging.INFO)
 @functions_framework.http
 def send_weather_email(request):
     units_of_measure = "Imperial"
-    zip_code = "19067"
-    country_code = "US"
-    timezone = "America/New_York"
+    zip_code = ZIP_CODE
+    country_code = COUNTRY_CODE
+    timezone = TIMEZONE
 
     send_email(units_of_measure, zip_code, country_code, timezone)
     return "Weather email sent successfully!"
@@ -55,39 +68,85 @@ def check_for_extreme_events(weather_dict):
     alerts = weather_dict.get("alerts", [])
     events = [alert.get("event", "") for alert in alerts]
 
-    hazards = ["Flood", "Ice", "Air Quality", "AIQ", "Air", "Wind", "Tornado"]
     extreme_events = [
-        event for event in events if any(hazard in event for hazard in hazards)
+        event for event in events if any(hazard in event for hazard in EXTREME_HAZARDS)
     ]
     return {"Events": events, "Extreme_Events": extreme_events}
 
 
-def rain_totals(weather_dict):
-    """Return forecast rain total for the first 21 hourly periods."""
+def forecast_window(timezone):
+    """Return the configured precipitation window in local time."""
+    timezone_obj = pytz.timezone(timezone)
+    now = datetime.now(timezone_obj)
+    ride_date = now.date() + timedelta(days=1)
+
+    start = timezone_obj.localize(
+        datetime.combine(now.date(), datetime.min.time()).replace(
+            hour=PRECIP_WINDOW_START_HOUR
+        )
+    )
+    end = timezone_obj.localize(
+        datetime.combine(ride_date, datetime.min.time()).replace(
+            hour=PRECIP_WINDOW_END_HOUR
+        )
+    )
+    return start, end, ride_date
+
+
+def hourly_forecasts_in_window(weather_dict, timezone):
+    """Return forecast rows that fall inside the configured local-time window."""
+    timezone_obj = pytz.timezone(timezone)
+    start, end, _ = forecast_window(timezone)
+
+    return [
+        hour
+        for hour in weather_dict.get("hourly", [])
+        if start
+        <= datetime.fromtimestamp(hour["dt"], timezone_obj)
+        <= end
+    ]
+
+
+def rain_totals(weather_dict, timezone):
+    """Return forecast rain total during the configured time window."""
     rain = 0
-    for hour in weather_dict.get("hourly", [])[:21]:
+    for hour in hourly_forecasts_in_window(weather_dict, timezone):
         rain += hour.get("rain", {}).get("1h", 0)
     return round(rain, 2)
 
 
-def snow_totals(weather_dict):
-    """Return forecast snow total for the first 21 hourly periods."""
+def snow_totals(weather_dict, timezone):
+    """Return forecast snow total during the configured time window."""
     snow = 0
-    for hour in weather_dict.get("hourly", [])[:21]:
+    for hour in hourly_forecasts_in_window(weather_dict, timezone):
         snow += hour.get("snow", {}).get("1h", 0)
     return round(snow, 2)
 
 
 def date_time(timestamp, timezone):
-    import datetime
-
     timezone_obj = pytz.timezone(timezone)
-    dt = datetime.datetime.fromtimestamp(timestamp, timezone_obj)
+    dt = datetime.fromtimestamp(timestamp, timezone_obj)
     return {"Date": dt.strftime("%Y-%m-%d"), "Time": dt.strftime("%I:%M:%S %p")}
 
 
+def forecast_for_hour(weather_dict, timezone, target_hour):
+    """Return the hourly forecast closest to the configured time tomorrow."""
+    timezone_obj = pytz.timezone(timezone)
+    _, _, ride_date = forecast_window(timezone)
+    target = timezone_obj.localize(
+        datetime.combine(ride_date, datetime.min.time()).replace(hour=target_hour)
+    )
+
+    return min(
+        weather_dict["hourly"],
+        key=lambda hour: abs(
+            datetime.fromtimestamp(hour["dt"], timezone_obj) - target
+        ),
+    )
+
+
 def morning_ride_feels_temp(weather_dict, timezone):
-    hour = weather_dict["hourly"][10]
+    hour = forecast_for_hour(weather_dict, timezone, MORNING_COMMUTE_HOUR)
     date_and_time = date_time(hour["dt"], timezone)
     return {
         "Time": date_and_time["Time"],
@@ -97,7 +156,7 @@ def morning_ride_feels_temp(weather_dict, timezone):
 
 
 def afternoon_ride_feels_temp(weather_dict, timezone):
-    hour = weather_dict["hourly"][21]
+    hour = forecast_for_hour(weather_dict, timezone, AFTERNOON_COMMUTE_HOUR)
     date_and_time = date_time(hour["dt"], timezone)
     return {
         "Time": date_and_time["Time"],
@@ -108,13 +167,17 @@ def afternoon_ride_feels_temp(weather_dict, timezone):
 
 def good_or_bad_bike_day(units_of_measure, zip_code, country_code, timezone):
     weather_dict = retrieve_weather_data(units_of_measure, zip_code, country_code)
-    rain = rain_totals(weather_dict)
-    snow = snow_totals(weather_dict)
+    rain = rain_totals(weather_dict, timezone)
+    snow = snow_totals(weather_dict, timezone)
     events = check_for_extreme_events(weather_dict)
     morning = morning_ride_feels_temp(weather_dict, timezone)
     afternoon = afternoon_ride_feels_temp(weather_dict, timezone)
 
-    is_good_day = rain < 1 and snow == 0 and len(events["Extreme_Events"]) == 0
+    is_good_day = (
+        rain < MAX_RAIN_MM
+        and snow == 0
+        and len(events["Extreme_Events"]) == 0
+    )
 
     if is_good_day:
         subject = "Tomorrow is a GREAT day to bike to work!"
